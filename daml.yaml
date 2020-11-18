@@ -1,0 +1,17 @@
+sdk-version: 1.6.0
+name: tuesday
+source: daml
+init-script: 
+parties:
+  - Mondavi
+  - KoolVines
+  - UserAdmin
+  - Alice 
+  - Bob
+version: 0.0.1
+dependencies:
+  - daml-prim
+  - daml-stdlib
+  - daml-script
+sandbox-options:
+  - --wall-clock-time

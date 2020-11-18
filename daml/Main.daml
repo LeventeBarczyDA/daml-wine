@@ -1,0 +1,180 @@
+module Main where 
+
+import Daml.Script
+
+import DA.Date
+
+data Bottling = Bottling 
+  with 
+    producer: Party 
+    vintage: Int 
+    name: Text 
+    appelation: Apellation 
+    casesProduced: Int 
+    certifiedOrganicBy: Optional Party 
+  deriving (Eq, Show)
+
+isOrganic: Bottling -> Bool 
+isOrganic b = case b.certifiedOrganicBy of 
+  None -> False 
+  Some party -> True
+
+data Apellation = 
+    CabFranc 
+  | CabSauv
+  | PinotNoir 
+  | PinotGrigio 
+  | Blend 
+      with 
+        grapes: (Apellation, Apellation)
+  deriving (Eq, Show)
+
+toString: Apellation -> Text
+toString a = case a of 
+  CabFranc -> "Cabernet Sauvignon"
+  CabSauv -> "CabernetSauvignon"
+  PinotNoir -> "Pinot Noir"
+  PinotGrigio -> "Pinot Grigio"
+  Blend t -> toString t._1 <> " and " <> toString t._2
+
+data TrueFalse = Verdad | Falso  -- Bool
+  deriving (Eq, Show)
+
+myAnd: TrueFalse -> TrueFalse -> TrueFalse 
+myAnd a b = 
+  case a of 
+    Verdad -> case b of 
+      Verdad -> Verdad
+      Falso -> Falso
+    Falso -> Falso 
+
+pi: Decimal
+pi = 3.0
+
+cyl h r = pi * h * r * r
+circle = cyl 1.0
+
+data MyList a = EmptyList | ConsList 
+  with 
+    head: a 
+    tail: MyList a
+
+data MyOptional a = MySome a | MyNone 
+
+template WineForward 
+  with 
+    bottling: Bottling
+    buyer: Party 
+    maturity: Date
+    cases: Int 
+  where 
+    signatory bottling.producer, buyer 
+
+template WineForwardProposal 
+  with 
+    bottling: Bottling
+    buyer: Party 
+    maturity: Date
+    cases: Int 
+  where 
+    signatory bottling.producer 
+
+    controller buyer can 
+      Accept: ContractId WineForward
+        do 
+          create WineForward with ..
+
+template WineCustody 
+  with
+    custodian: Party 
+    owner: Party 
+    bottling: Bottling
+    userAdmin: Party 
+    cases: Int 
+  where 
+    signatory custodian, bottling.producer, userAdmin, bottling.certifiedOrganicBy
+
+    controller owner can 
+      TransferOwnership: ContractId WineCustody 
+        with 
+          newOwner: Party 
+        do 
+          create this with owner = newOwner
+
+template ProducerRole 
+  with 
+    producer: Party 
+    uid: Text 
+    userAdmin: Party 
+    limit: Int
+  where 
+    signatory userAdmin 
+
+    controller producer can 
+      nonconsuming ProduceWine: ContractId WineCustody 
+        with 
+          bottling: Bottling 
+        do 
+          assert $ bottling.casesProduced < limit
+          create WineCustody
+            with 
+              custodian = producer 
+              owner = producer
+              cases = bottling.casesProduced
+              ..
+
+    controller userAdmin can 
+      Revoke: () do return ()
+
+forwardScenario: Script ()
+forwardScenario = do 
+  producer <- allocatePartyWithHint "Mondavi" (PartyIdHint "Mondavi")
+  buyer <- allocatePartyWithHint "KoolWines" (PartyIdHint "KoolWines")
+  userAdmin <- allocatePartyWithHint "UserAdmin" (PartyIdHint "UserAdmin")
+  californiaOrganic <- allocatePartyWithHint "CaliforniaOrganic" (PartyIdHint "CaliforniaOrganic")
+
+  proposal <- submit producer do 
+    createCmd WineForwardProposal
+      with 
+        buyer = buyer
+        maturity = fromGregorian (2021, May, 1)
+        cases = 10 
+        bottling = Bottling 
+          with 
+            producer
+            vintage = 2020 
+            name = "Blockchain"
+            appelation = CabFranc
+            casesProduced = 2000
+            certifiedOrganicBy = Some californiaOrganic
+
+  submit buyer do 
+    exerciseCmd proposal Accept
+
+  producerRole <- submit userAdmin do 
+    createCmd ProducerRole 
+      with 
+        producer 
+        uid = "Mondavi LLC"
+        userAdmin
+        limit = 1000
+
+  ownership <- submit producer do 
+    exerciseCmd producerRole ProduceWine
+      with 
+        bottling = Bottling 
+          with 
+            producer
+            vintage = 2020 
+            name = "Blockchain"
+            appelation = PinotNoir
+            casesProduced = 500
+            certifiedOrganicBy = None
+
+
+  submit producer do 
+    exerciseCmd ownership TransferOwnership with newOwner = buyer
+
+  
+
+  return ()

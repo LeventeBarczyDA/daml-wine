@@ -65,19 +65,37 @@ template WineForward
   with 
     bottling: Bottling
     buyer: Party 
+    seller: Party 
+    custodian: Party
     maturity: Date
     cases: Int 
   where 
-    signatory bottling.producer, buyer 
+    signatory bottling.producer, buyer, seller 
+
+    controller seller can 
+      Deliver: ContractId WineCustody 
+        with 
+          lockedWineId: ContractId WineLock 
+        do 
+          lockedWine <- fetch lockedWineId 
+          assert $ lockedWine.owner == seller 
+          assert $ lockedWine.bottling == bottling 
+          assert $ lockedWine.lockedCases == cases
+
+          exercise lockedWineId GiveToNewOwner 
+            with 
+              newOwner = buyer
 
 template WineForwardProposal 
   with 
+    seller: Party
     bottling: Bottling
     buyer: Party 
+    custodian: Party
     maturity: Date
     cases: Int 
   where 
-    signatory bottling.producer 
+    signatory seller, bottling.producer
 
     controller buyer can 
       Accept: ContractId WineForward
@@ -100,6 +118,73 @@ template WineCustody
           newOwner: Party 
         do 
           create this with owner = newOwner
+
+      Lock: (ContractId WineLock, Optional (ContractId WineCustody))
+        with 
+          lockedCases: Int
+        do 
+          -- archive of self
+          assert (lockedCases <= cases)
+          optRemaining: Optional (ContractId WineCustody) <- if lockedCases == cases 
+            then return None
+            else Some <$> (create this with cases = cases - lockedCases)
+          lock <- create WineLock with ..
+
+          return (lock, optRemaining)
+
+mul: Decimal -> Decimal -> Decimal 
+mul a b = a * b
+
+arithmetic: Script () 
+arithmetic = do 
+  assert (1 == 1) 
+  assert 
+    $ 1 == 1
+  assert 
+    $ mul 2.0 2.0 == 4.0
+  assert 
+    $ 2.0 `mul` 2.0 == 4.0
+  assert 
+    $ 41 == 41
+  assert 
+    $ (==) 41 41
+  assert 
+    $ ((\x -> x*x) <$> [1,2,3,4]) == [1,4,9,16]
+
+template WineLock 
+  with 
+    custodian: Party 
+    owner: Party 
+    bottling: Bottling 
+    userAdmin: Party 
+    lockedCases: Int 
+  where
+    signatory 
+      custodian, 
+      bottling.producer, 
+      userAdmin, 
+      bottling.certifiedOrganicBy,
+      owner 
+    ensure lockedCases > 0
+    
+    controller custodian can 
+      Unlock: ContractId WineCustody 
+        do 
+          create WineCustody 
+            with 
+              cases = lockedCases 
+              ..
+    
+      GiveToNewOwner: ContractId WineCustody
+        with 
+          newOwner: Party 
+        do 
+          assert $ newOwner /= owner
+          create WineCustody 
+            with 
+              cases = lockedCases 
+              owner = newOwner 
+              ..
 
 template ProducerRole 
   with 
@@ -136,7 +221,9 @@ forwardScenario = do
   proposal <- submit producer do 
     createCmd WineForwardProposal
       with 
+        seller = producer
         buyer = buyer
+        custodian = producer
         maturity = fromGregorian (2021, May, 1)
         cases = 10 
         bottling = Bottling 

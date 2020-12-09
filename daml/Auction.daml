@@ -1,0 +1,157 @@
+module Auction where 
+
+import Main 
+
+import DA.List 
+import DA.Next.Map
+import DA.Optional
+import Daml.Script
+
+template Auction 
+  with  
+    bidders: [Party]
+    bottling: Bottling 
+    activeBid: [Party]
+  where 
+    signatory bottling.producer
+    observer bidders
+
+    key bottling: Bottling 
+    maintainer key.producer
+
+    ensure 
+          unique bidders
+      &&  bottling.producer `notElem` bidders
+
+    controller bottling.producer can 
+      InviteBidder: ContractId Auction
+        with 
+          bidder: Party 
+        do 
+          create this with bidders = bidder :: bidders
+
+      InviteBidders: ContractId Auction 
+        with 
+          newBidders: [Party]
+        do 
+          create this with bidders = bidders ++ newBidders
+
+      Finalize: ContractId FinalizedAuction 
+        do 
+          secretBids: [Optional (ContractId SecretBid)] <- mapA (\bidder -> 
+            lookupByKey @SecretBid (bidder, bottling)) bidders 
+          let 
+            someSecretBids: [ContractId SecretBid] = catOptionals secretBids 
+          bidList: [(Party, BidData)] <- mapA (\secretBidId -> do 
+            bidData <- fetch secretBidId 
+            exercise secretBidId ArchiveSecretBid
+            return (bidData.bidder, BidData 
+              with 
+                amount = bidData.amount
+                price = bidData.price)) someSecretBids 
+          let 
+            bids: Map Party BidData = fromList bidList 
+          create FinalizedAuction 
+            with ..
+
+
+    choice Bid: ContractId SecretBid 
+        with 
+          bidder: Party 
+          price: Decimal 
+          amount: Int 
+      controller bidder
+        do 
+          assert (bidder `elem` bidders)
+          create this with activeBid = bidder :: activeBid
+          create SecretBid 
+            with ..
+
+template SecretBid 
+  with 
+    bottling: Bottling 
+    bidder: Party 
+    price: Decimal 
+    amount: Int 
+  where 
+    signatory bidder, bottling.producer
+
+    key (bidder, bottling): (Party, Bottling)
+    maintainer key._2.producer
+
+    controller bidder can 
+      ChangeBid: ContractId SecretBid 
+        with 
+          newPrice: Decimal 
+          newAmount: Int 
+        do 
+          create this 
+            with 
+              price = newPrice 
+              amount = newAmount
+
+    controller bottling.producer can 
+      ArchiveSecretBid: () do return ()
+
+data BidData = BidData 
+  with 
+    price: Decimal 
+    amount: Int 
+  deriving (Eq, Show)
+
+template FinalizedAuction 
+  with 
+    bidders: [Party]
+    bottling: Bottling
+    bids: Map Party BidData
+  where 
+    signatory bottling.producer 
+
+
+auctionScenario: Script ()
+auctionScenario = do 
+  producer <- allocatePartyWithHint "Mondavi" (PartyIdHint "Mondavi")
+  buyer <- allocatePartyWithHint "KoolWines" (PartyIdHint "KoolWines")
+  userAdmin <- allocatePartyWithHint "UserAdmin" (PartyIdHint "UserAdmin")
+  californiaOrganic <- allocatePartyWithHint "CaliforniaOrganic" (PartyIdHint "CaliforniaOrganic")
+
+  alice <- allocatePartyWithHint "Alice" (PartyIdHint "Alice")
+  bob <- allocatePartyWithHint "Bob" (PartyIdHint "Bob")
+
+  auction <- submit producer do 
+    createCmd Auction 
+      with 
+        bidders = []
+        activeBid = []
+        bottling = Bottling 
+          with 
+            producer
+            vintage = 2020 
+            name = "Blockchain"
+            appelation = PinotNoir
+            casesProduced = 500
+            certifiedOrganicBy = None
+
+  auction <- submit producer do 
+    exerciseCmd auction InviteBidders
+      with 
+        newBidders = [alice, bob]
+
+  aliceBid <- submit alice do 
+    exerciseCmd auction Bid 
+      with 
+        bidder = alice
+        amount = 200 
+        price = 5000.00
+
+  bobBid <- submit bob do 
+    exerciseCmd auction Bid 
+      with 
+        bidder = bob
+        amount = 100 
+        price = 4000.00
+
+  finalized <- submit producer do 
+    exerciseCmd auction Finalize
+
+  return ()
